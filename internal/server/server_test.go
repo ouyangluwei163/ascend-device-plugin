@@ -1111,6 +1111,17 @@ func TestAllocate_DeviceShare(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "device-share") {
 			t.Fatalf("expected device-share error, got: %v", err)
 		}
+
+		// Retry-cleanliness: a failed flip must NOT erase the to-allocate
+		// annotation, so a re-Allocate decodes the same pending device.
+		got, gerr := client.KubeClient.CoreV1().Pods("default").Get(
+			context.Background(), "test-pod", metav1.GetOptions{})
+		if gerr != nil {
+			t.Fatalf("get pod after failed allocate: %v", gerr)
+		}
+		if raw := got.Annotations["hami.io/Ascend910-devices-to-allocate"]; !strings.Contains(raw, "uuid1") {
+			t.Fatalf("to-allocate annotation must remain intact after a failed flip, got %q", raw)
+		}
 	})
 
 	t.Run("HamiCoreUnknownUUIDFails", func(t *testing.T) {
