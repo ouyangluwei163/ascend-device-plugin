@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -943,4 +944,192 @@ func TestGrpcServer_StopWaitForAllGoroutines(t *testing.T) {
 	if err := ps.Stop(); err != nil {
 		t.Fatalf("Stop() failed: %v", err)
 	}
+}
+
+// ============================================================================
+// Allocate device-share tests
+// ============================================================================
+
+func TestAllocate_DeviceShare(t *testing.T) {
+	const commonWord = "Ascend910"
+
+	// uuid1 -> card0/chip1, uuid2 -> card1/chip0, uuid3 -> card0/chip1 (same
+	// chip as uuid1, to exercise dedup).
+	makePS := func() *PluginServer {
+		return &PluginServer{
+			commonWord:        commonWord,
+			nodeName:          "test-node",
+			toAllocDeviceAnno: "hami.io/Ascend910-devices-to-allocate",
+			allocAnno:         "huawei.com/Ascend910",
+			mgr: &FakeManager{
+				GetDeviceByUUIDFunc: func(uuid string) *manager.Device {
+					switch uuid {
+					case "uuid1":
+						return &manager.Device{UUID: "uuid1", PhyID: 3, CardID: 0, DeviceID: 1}
+					case "uuid2":
+						return &manager.Device{UUID: "uuid2", PhyID: 4, CardID: 1, DeviceID: 0}
+					case "uuid3":
+						return &manager.Device{UUID: "uuid3", PhyID: 5, CardID: 0, DeviceID: 1}
+					default:
+						return nil
+					}
+				},
+			},
+		}
+	}
+
+	// setupPod wires a fake clientset with a pod whose to-allocate annotation
+	// lists one container per uuid. vnpuMode == "" means the annotation is
+	// omitted (native template mode).
+	setupPod := func(vnpuMode string, uuids ...string) CleanupFunc {
+		c1 := setupInRequestDevices(commonWord)
+		toAllocAnno := "hami.io/Ascend910-devices-to-allocate"
+		allocAnno := "huawei.com/Ascend910"
+		ctrDevs := make([]device.ContainerDevices, 0, len(uuids))
+		rtInfo := make([]ascend.RuntimeInfo, 0, len(uuids))
+		for _, u := range uuids {
+			ctrDevs = append(ctrDevs, device.ContainerDevices{cd(u, commonWord, 1024, 4)})
+			rtInfo = append(rtInfo, ascend.RuntimeInfo{UUID: u, Temp: "vir01"})
+		}
+		containerDevs := device.EncodePodSingleDevice(device.PodSingleDevice(ctrDevs))
+		rtData, _ := json.Marshal(rtInfo)
+		annos := map[string]string{
+			toAllocAnno:              containerDevs,
+			allocAnno:                string(rtData),
+			util.BindTimeAnnotations: "2024-01-01T00:00:00Z",
+			util.DeviceBindPhase:     util.DeviceBindAllocating,
+		}
+		if vnpuMode != "" {
+			annos[VNPUModeAnnotation] = vnpuMode
+		}
+		_, _, c2 := setupAllocateEnv("test-node", "test-pod", "default", len(uuids), annos)
+		return composeCleanup(c2, c1)
+	}
+
+	reqsFor := func(uuids ...string) *v1beta1.AllocateRequest {
+		crs := make([]*v1beta1.ContainerAllocateRequest, 0, len(uuids))
+		for _, u := range uuids {
+			crs = append(crs, &v1beta1.ContainerAllocateRequest{DevicesIDs: []string{u + "-0"}})
+		}
+		return &v1beta1.AllocateRequest{ContainerRequests: crs}
+	}
+
+	// callSet normalizes captured npu-smi calls into a comparable set of
+	// space-joined arg strings (chipSet iteration order is nondeterministic).
+	callSet := func(calls [][]string) map[string]bool {
+		s := make(map[string]bool, len(calls))
+		for _, c := range calls {
+			s[strings.Join(c, " ")] = true
+		}
+		return s
+	}
+
+	t.Run("HamiCoreFlipsDeviceShare", func(t *testing.T) {
+		t.Cleanup(setupPod(VNPUModeHamiCore, "uuid1"))
+		var calls [][]string
+		withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return nil, nil
+		})
+		ps := makePS()
+		if _, err := ps.Allocate(context.Background(), reqsFor("uuid1")); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := [][]string{{"set", "-t", "device-share", "-i", "0", "-c", "1", "-d", "1"}}
+		if !reflect.DeepEqual(calls, want) {
+			t.Fatalf("npu-smi calls:\ngot  %v\nwant %v", calls, want)
+		}
+	})
+
+	t.Run("MultiCardTwoChips", func(t *testing.T) {
+		t.Cleanup(setupPod(VNPUModeHamiCore, "uuid1", "uuid2"))
+		var calls [][]string
+		withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return nil, nil
+		})
+		ps := makePS()
+		if _, err := ps.Allocate(context.Background(), reqsFor("uuid1", "uuid2")); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(calls) != 2 {
+			t.Fatalf("expected 2 calls, got %d: %v", len(calls), calls)
+		}
+		got := callSet(calls)
+		for _, w := range []string{
+			"set -t device-share -i 0 -c 1 -d 1",
+			"set -t device-share -i 1 -c 0 -d 1",
+		} {
+			if !got[w] {
+				t.Fatalf("missing expected call %q in %v", w, calls)
+			}
+		}
+	})
+
+	t.Run("MultiContainerDedupsChip", func(t *testing.T) {
+		// uuid1 and uuid3 share card0/chip1 -> exactly one flip.
+		t.Cleanup(setupPod(VNPUModeHamiCore, "uuid1", "uuid3"))
+		var calls [][]string
+		withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return nil, nil
+		})
+		ps := makePS()
+		if _, err := ps.Allocate(context.Background(), reqsFor("uuid1", "uuid3")); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := [][]string{{"set", "-t", "device-share", "-i", "0", "-c", "1", "-d", "1"}}
+		// single key after dedup, so call order is deterministic — DeepEqual is safe
+		if !reflect.DeepEqual(calls, want) {
+			t.Fatalf("expected one deduped call, got %v", calls)
+		}
+	})
+
+	t.Run("NonHamiCoreNoFlip", func(t *testing.T) {
+		t.Cleanup(setupPod("", "uuid1"))
+		called := false
+		withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		})
+		ps := makePS()
+		if _, err := ps.Allocate(context.Background(), reqsFor("uuid1")); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if called {
+			t.Fatal("npu-smi must not be called for non-hami-core pods")
+		}
+	})
+
+	t.Run("FlipFailureFailsAllocate", func(t *testing.T) {
+		t.Cleanup(setupPod(VNPUModeHamiCore, "uuid1"))
+		withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+			return []byte("E80001 not allowed"), fmt.Errorf("exit status 1")
+		})
+		ps := makePS()
+		_, err := ps.Allocate(context.Background(), reqsFor("uuid1"))
+		if err == nil || !strings.Contains(err.Error(), "device-share") {
+			t.Fatalf("expected device-share error, got: %v", err)
+		}
+	})
+
+	t.Run("HamiCoreUnknownUUIDFails", func(t *testing.T) {
+		// A hami-core pod whose device is unknown must fail in the device-share
+		// chip-collection step (which runs before building the container
+		// response), proving the fail-fast ordering.
+		t.Cleanup(setupPod(VNPUModeHamiCore, "unknown-uuid"))
+		var calls [][]string
+		withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			return nil, nil
+		})
+		ps := makePS()
+		_, err := ps.Allocate(context.Background(), reqsFor("unknown-uuid"))
+		if err == nil || !strings.Contains(err.Error(), "unknown uuid") {
+			t.Fatalf("expected unknown-uuid error, got: %v", err)
+		}
+		if len(calls) != 0 {
+			t.Fatalf("npu-smi must not run when chip collection fails, got %v", calls)
+		}
+	})
 }

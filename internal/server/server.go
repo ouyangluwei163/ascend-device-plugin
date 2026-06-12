@@ -316,6 +316,8 @@ func (ps *PluginServer) Allocate(ctx context.Context, reqs *v1beta1.AllocateRequ
 	// a subset of containers. Use pop semantics to match each request with its
 	// corresponding containerDevices.
 	responses := v1beta1.AllocateResponse{}
+	vnpuMode := pod.Annotations[VNPUModeAnnotation]
+	chipSet := map[chipKey]struct{}{}
 	for _, req := range reqs.ContainerRequests {
 		containerDevs, ctrName, err := ps.popNextContainerDevices(pod, podSingleDev)
 		if err != nil {
@@ -327,11 +329,39 @@ func (ps *PluginServer) Allocate(ctx context.Context, reqs *v1beta1.AllocateRequ
 			return nil, fmt.Errorf("device number not matched: annotation has %d, request has %d", len(containerDevs), len(req.DevicesIDs))
 		}
 
+		// hami-core soft slicing requires npu-smi device-share enabled on every
+		// assigned chip; collect the distinct chips for this call so we can flip
+		// them once below.
+		if vnpuMode == VNPUModeHamiCore {
+			for _, dev := range containerDevs {
+				d := ps.mgr.GetDeviceByUUID(dev.UUID)
+				if d == nil {
+					return nil, fmt.Errorf("device-share lookup: unknown uuid %s", dev.UUID)
+				}
+				chipSet[chipKey{Card: d.CardID, Chip: d.DeviceID}] = struct{}{}
+			}
+		}
+
 		resp, err := ps.buildContainerAllocateResponse(pod, ctrName, containerDevs, rtInfoLookup)
 		if err != nil {
 			return nil, fmt.Errorf("build container allocate response: %w", err)
 		}
 		responses.ContainerResponses = append(responses.ContainerResponses, resp)
+	}
+
+	// Flip device-share once per Allocate (deduped across containers) before
+	// erasing the to-allocate annotation: on failure we return early with the
+	// annotation intact, so a kubelet retry decodes the same state. Fail-fast —
+	// success stays false, so the deferred handler releases the node lock and
+	// marks bind-phase failed.
+	if vnpuMode == VNPUModeHamiCore && len(chipSet) > 0 {
+		chips := make([]chipKey, 0, len(chipSet))
+		for c := range chipSet {
+			chips = append(chips, c)
+		}
+		if err := applyDeviceShare(chips, true); err != nil {
+			return nil, fmt.Errorf("apply device-share for pod %s/%s: %w", pod.Namespace, pod.Name, err)
+		}
 	}
 
 	// Patch the annotation with the in-memory erased podSingleDev.
