@@ -22,7 +22,14 @@ Ascend device plugin 是用来支持在 [HAMi](https://github.com/Project-HAMi/H
 **hami-vnpu-core 软切分要求：**
 
 - Ascend 驱动版本：≥ 25.5
-- 芯片模式：在昇腾芯片上开启 `device-share` 模式以支持虚拟化。
+- 芯片模式：`device-share` 现在由插件**自动管理**。当 Pod 设置 `huawei.com/vnpu-mode: hami-core` 时，插件在分配阶段对该 Pod 占用的每个芯片执行 `npu-smi set -t device-share -i <card> -c <chip> -d 1`，无需手动执行 `npu-smi`。
+
+  插件按以下顺序解析 `npu-smi`：`/usr/local/Ascend/driver/tools/npu-smi`（由已有的 driver hostPath 挂载提供）、`/usr/local/sbin/npu-smi`、`/usr/local/bin/npu-smi`，最后是 `PATH`。若宿主机的 `npu-smi` 在其他位置，可在 `ascend-device-plugin.yaml` 中增加单文件 hostPath 挂载（例如 `/usr/local/sbin/npu-smi`）。
+
+  若翻转失败，该 Pod 的分配会失败，错误会显示在 Pod 的事件中。
+
+<details>
+<summary>历史：手动开启 <code>device-share</code>（已不再需要）</summary>
 
 **开启 `device-share` 模式**
 
@@ -34,6 +41,8 @@ Ascend device plugin 是用来支持在 [HAMi](https://github.com/Project-HAMi/H
 | ------- | ----------------------------------------------------------- |
 | *id*    | 设备 ID。通过 **npu-smi info -l** 命令查出的 NPU ID 即为设备 ID。 |
 | *value* | 容器使能状态：分为禁用、使能。默认禁用。<br>0：禁用<br>1：使能 |
+
+</details>
 
 ## 编译
 
