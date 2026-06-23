@@ -24,10 +24,12 @@ This project implements  a soft slicing mechanism based on `libvnpu.so` intercep
 hami-vnpu-core Soft Slicing Requirements:
 
 - **Ascend Driver Version**: ≥ 25.5
-- **Chip Mode**: `device-share` is **auto-managed**. When a Pod sets
-  `huawei.com/vnpu-mode: hami-core`, the device plugin runs
-  `npu-smi set -t device-share -i <card> -c <chip> -d 1` on each chip assigned
-  to that Pod at allocation time. No manual `npu-smi` step is required.
+- **Chip Mode**: `device-share` is **auto-managed at the node level**. When the
+  node is configured for hami-vnpu-core soft slicing (the `hami-vnpu-core` field
+  in `device-node-config`), the device plugin enables device-share on **every
+  chip on the node at startup**, running
+  `npu-smi set -t device-share -i <card> -c <chip> -d 1` once per chip. No manual
+  `npu-smi` step and no per-Pod annotation are required to enable it.
 
   The plugin resolves `npu-smi` from, in order:
   `/usr/local/Ascend/driver/tools/npu-smi` (provided by the existing driver
@@ -35,8 +37,9 @@ hami-vnpu-core Soft Slicing Requirements:
   `PATH`. If your host ships `npu-smi` elsewhere, add a single-file hostPath
   mount in `ascend-device-plugin.yaml`, e.g. `/usr/local/sbin/npu-smi`.
 
-  If the flip fails, the Pod's allocation fails and the error appears in the
-  Pod's events.
+  This config is read once at startup, so **changing `hami-vnpu-core` requires
+  restarting the plugin** to take effect. If any chip's flip fails, the **plugin
+  fails to start** and advertises no devices on the node until it succeeds.
 
 <details>
 <summary>Legacy: manually enabling <code>device-share</code> (no longer required)</summary>
