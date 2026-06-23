@@ -105,3 +105,38 @@ func applyDeviceShare(chips []chipKey, enabled bool) error {
 	}
 	return nil
 }
+
+// enableNodeDeviceShare turns device-share on for every chip on the node when
+// the node is configured for hami-vnpu-core soft slicing. It is called once at
+// startup (from Start, after UpdateDevice has populated the device list) and is
+// idempotent: npu-smi accepts redundant set commands, so a plugin restart
+// simply re-applies the same state.
+//
+// When the node is not hami-vnpu-core it is a no-op — it never writes -d 0, so
+// share state set for other purposes is left untouched.
+//
+// Fail-fast: any per-chip failure is returned to the caller, which aborts
+// startup so kubelet restarts the plugin and retries.
+func (ps *PluginServer) enableNodeDeviceShare() error {
+	if !ps.mgr.IsHamiVnpuCore() {
+		klog.V(3).Infof("node %s is not hami-vnpu-core, skipping device-share", ps.nodeName)
+		return nil
+	}
+	chipSet := map[chipKey]struct{}{}
+	for _, d := range ps.mgr.GetDevices() {
+		chipSet[chipKey{Card: d.CardID, Chip: d.DeviceID}] = struct{}{}
+	}
+	if len(chipSet) == 0 {
+		klog.Warningf("node %s is hami-vnpu-core but no devices found for device-share", ps.nodeName)
+		return nil
+	}
+	chips := make([]chipKey, 0, len(chipSet))
+	for c := range chipSet {
+		chips = append(chips, c)
+	}
+	if err := applyDeviceShare(chips, true); err != nil {
+		return fmt.Errorf("enable node device-share: %w", err)
+	}
+	klog.Infof("device-share enabled on %d chip(s) of node %s", len(chips), ps.nodeName)
+	return nil
+}

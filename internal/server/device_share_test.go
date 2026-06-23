@@ -23,6 +23,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Project-HAMi/ascend-device-plugin/internal/manager"
 )
 
 // withFakeNpuSmi swaps the package-level runNpuSmi for a fake and restores it
@@ -153,5 +155,85 @@ func TestRunNpuSmi_AnswersDeviceShareConfirmation(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "ok") {
 		t.Fatalf("expected confirmation to be consumed and command to print ok, got %q", out)
+	}
+}
+
+func TestEnableNodeDeviceShare_NotHamiVnpuCore(t *testing.T) {
+	called := false
+	withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+		called = true
+		return nil, nil
+	})
+	ps := &PluginServer{
+		nodeName: "node-1",
+		mgr: &FakeManager{
+			IsHamiVnpuCoreFunc: func() bool { return false },
+			GetDevicesFunc: func() []*manager.Device {
+				return []*manager.Device{{CardID: 0, DeviceID: 0}}
+			},
+		},
+	}
+	if err := ps.enableNodeDeviceShare(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Fatal("npu-smi must not be invoked when node is not hami-vnpu-core")
+	}
+}
+
+func TestEnableNodeDeviceShare_FlipsAllChipsDeduped(t *testing.T) {
+	type ic struct{ card, chip string }
+	seen := map[ic]int{}
+	withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+		// args: set -t device-share -i <card> -c <chip> -d <flag>
+		if len(args) != 9 || args[8] != "1" {
+			t.Errorf("unexpected npu-smi args: %v", args)
+			return nil, nil
+		}
+		seen[ic{args[4], args[6]}]++
+		return nil, nil
+	})
+	ps := &PluginServer{
+		nodeName: "node-1",
+		mgr: &FakeManager{
+			IsHamiVnpuCoreFunc: func() bool { return true },
+			GetDevicesFunc: func() []*manager.Device {
+				return []*manager.Device{
+					{CardID: 0, DeviceID: 0},
+					{CardID: 0, DeviceID: 1},
+					{CardID: 0, DeviceID: 0}, // duplicate chip — must be flipped once
+					{CardID: 1, DeviceID: 0},
+				}
+			},
+		},
+	}
+	if err := ps.enableNodeDeviceShare(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[ic]int{
+		{"0", "0"}: 1,
+		{"0", "1"}: 1,
+		{"1", "0"}: 1,
+	}
+	if !reflect.DeepEqual(seen, want) {
+		t.Fatalf("device-share calls mismatch:\ngot  %v\nwant %v", seen, want)
+	}
+}
+
+func TestEnableNodeDeviceShare_FlipFailureFailsFast(t *testing.T) {
+	withFakeNpuSmi(t, func(args ...string) ([]byte, error) {
+		return []byte("E80001 not allowed"), fmt.Errorf("exit status 1")
+	})
+	ps := &PluginServer{
+		nodeName: "node-1",
+		mgr: &FakeManager{
+			IsHamiVnpuCoreFunc: func() bool { return true },
+			GetDevicesFunc: func() []*manager.Device {
+				return []*manager.Device{{CardID: 0, DeviceID: 0}}
+			},
+		},
+	}
+	if err := ps.enableNodeDeviceShare(); err == nil {
+		t.Fatal("expected error when npu-smi flip fails, got nil")
 	}
 }
