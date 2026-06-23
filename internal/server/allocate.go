@@ -66,8 +66,12 @@ func (ps *PluginServer) buildContainerAllocateResponse(pod *v1.Pod, ctrName stri
 	resp.Envs["ASCEND_VISIBLE_DEVICES"] = ascendVisibleDevices
 
 	vnpuMode := pod.Annotations[VNPUModeAnnotation]
-	klog.V(4).Infof("Pod %s vnpu mode: %s", pod.Name, vnpuMode)
-	if vnpuMode == VNPUModeHamiCore {
+	// Resolve the effective mode. An explicit hami-core annotation forces
+	// soft-partitioning. With no annotation the pod is mode-agnostic and follows
+	// the node: if this node runs in hami-core mode, treat the pod as hami-core.
+	effectiveHamiCore := vnpuMode == VNPUModeHamiCore || (vnpuMode == "" && ps.mgr.IsHamiVnpuCore())
+	klog.V(4).Infof("Pod %s vnpu mode: %q, effectiveHamiCore: %v", pod.Name, vnpuMode, effectiveHamiCore)
+	if effectiveHamiCore {
 		// 1. Handle volume mount injection
 		var mounts []*v1beta1.Mount
 		// A.Huawei driver and SMI toolchain (Read-Only)
