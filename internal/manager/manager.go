@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 
+	"ascend-common/api"
 	"ascend-common/devmanager"
 	"ascend-common/devmanager/dcmi"
 
@@ -69,10 +70,16 @@ func NewAscendManager() (*AscendManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to auto-init device manager: %w", err)
 	}
+	return NewAscendManagerWithDevice(mgr), nil
+}
+
+// NewAscendManagerWithDevice wraps an initialized device interface. Tests can
+// exercise config selection and registration without loading the host's DCMI.
+func NewAscendManagerWithDevice(mgr devmanager.DeviceInterface) *AscendManager {
 	return &AscendManager{
 		mgr:  mgr,
 		devs: []*Device{},
-	}, nil
+	}
 }
 
 func (am *AscendManager) LoadNodeConfig(nodePath string, nodeName string) error {
@@ -156,6 +163,9 @@ func (am *AscendManager) ResourceName() string {
 }
 
 func (am *AscendManager) VDeviceCount() int {
+	if am.config.ChipName == internal.Ascend950DT {
+		return 1
+	}
 	count := 0
 	if am.nodeConfig != nil && am.nodeConfig.VDeviceCount > 0 {
 		count = am.nodeConfig.VDeviceCount
@@ -178,6 +188,29 @@ func (am *AscendManager) VDeviceCount() int {
 	return int(am.config.MemoryAllocatable / am.config.Templates[0].Memory)
 }
 
+// cardAndDeviceID returns the npu-smi card/chip coordinates. DCMI v2 on A5
+// does not implement GetCardIDDeviceID; each physical NPU is a single-die card.
+// Using (phyID, 0) also keeps device-share's card/chip deduplication correct.
+func (am *AscendManager) cardAndDeviceID(logicID int32) (int32, int32, error) {
+	if am.mgr.GetDevType() != api.Ascend910A5 {
+		return am.mgr.GetCardIDDeviceID(logicID)
+	}
+	phyID, err := am.mgr.GetPhysicIDFromLogicID(logicID)
+	if err != nil {
+		return -1, -1, err
+	}
+	return phyID, 0, nil
+}
+
+// uuidOf uses DDIE on A5, whose DCMI v2 does not support VDIE.
+func (am *AscendManager) uuidOf(logicID int32) (string, error) {
+	dieType := dcmi.VDIE
+	if am.mgr.GetDevType() == api.Ascend910A5 {
+		dieType = dcmi.DDIE
+	}
+	return am.mgr.GetDieID(logicID, dieType)
+}
+
 func (am *AscendManager) UpdateDevice() error {
 	_, IDs, err := am.mgr.GetDeviceList()
 	if err != nil {
@@ -192,12 +225,12 @@ func (am *AscendManager) UpdateDevice() error {
 			klog.Errorf("failed to get physic id from logic id: %v", err)
 			return err
 		}
-		cardID, deviceID, err := am.mgr.GetCardIDDeviceID(ID)
+		cardID, deviceID, err := am.cardAndDeviceID(ID)
 		if err != nil {
 			klog.Errorf("failed to get card id from device id: %v", err)
 			return err
 		}
-		uuid, err := am.mgr.GetDieID(ID, dcmi.VDIE)
+		uuid, err := am.uuidOf(ID)
 		if err != nil {
 			klog.Errorf("failed to get uuid from device id: %v", err)
 			return err
@@ -257,14 +290,14 @@ func (am *AscendManager) GetIDs() []int32 {
 
 	availableIDs := make([]int32, 0, len(IDs))
 	for _, id := range IDs {
-		cardID, _, err := am.mgr.GetCardIDDeviceID(id)
+		cardID, _, err := am.cardAndDeviceID(id)
 		if err != nil {
 			klog.Warningf("failed to get card/device ID for logic ID %d: %v", id, err)
 			continue
 		}
 		uuid := ""
 		if am.nodeConfig.FilterDevices.HasUUID() {
-			uuid, err = am.mgr.GetDieID(id, dcmi.VDIE)
+			uuid, err = am.uuidOf(id)
 			if err != nil {
 				klog.Warningf("failed to get uuid for logic ID %d: %v", id, err)
 				continue
@@ -286,14 +319,14 @@ func (am *AscendManager) GetUnHealthIDs() []int32 {
 	var unhealthy []int32
 	for _, d := range IDs {
 		if filterDevicesEnabled {
-			cardID, _, err := am.mgr.GetCardIDDeviceID(d)
+			cardID, _, err := am.cardAndDeviceID(d)
 			if err != nil {
 				klog.Warningf("failed to get card/device ID for logic ID %d: %v", d, err)
 				continue
 			}
 			uuid := ""
 			if am.nodeConfig.FilterDevices.HasUUID() {
-				uuid, err = am.mgr.GetDieID(d, dcmi.VDIE)
+				uuid, err = am.uuidOf(d)
 				if err != nil {
 					klog.Warningf("failed to get uuid for logic ID %d: %v", d, err)
 					continue
@@ -326,14 +359,14 @@ func (am *AscendManager) CleanupIdleVNPUs() error {
 
 	totalCleaned := 0
 	for _, logicID := range IDs {
-		cardID, deviceID, err := am.mgr.GetCardIDDeviceID(logicID)
+		cardID, deviceID, err := am.cardAndDeviceID(logicID)
 		if err != nil {
 			klog.Warningf("failed to get card/device ID for logic ID %d: %v", logicID, err)
 			continue
 		}
 		uuid := ""
 		if am.shouldCheckIgnored() && am.nodeConfig.FilterDevices.HasUUID() {
-			uuid, err = am.mgr.GetDieID(logicID, dcmi.VDIE)
+			uuid, err = am.uuidOf(logicID)
 			if err != nil {
 				klog.Warningf("failed to get uuid for logic ID %d: %v", logicID, err)
 				continue
@@ -393,6 +426,11 @@ func (am *AscendManager) IsEnpu() bool {
 }
 
 func (am *AscendManager) vnpuMode() (string, error) {
+	// A5 currently supports whole cards only, even when the shared config
+	// enables a soft-slice backend for other Ascend chips.
+	if am.config.ChipName == internal.Ascend950DT {
+		return internal.VNPUModeTemplate, nil
+	}
 	mode, err := am.globalConfig.VNPUs.Mode()
 	if err != nil || am.nodeConfig == nil {
 		return mode, err

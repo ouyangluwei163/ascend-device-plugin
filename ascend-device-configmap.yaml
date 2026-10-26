@@ -109,6 +109,13 @@ data:
             memory: 16384
             aiCore: 10
             aiCPU: 3
+      - chipName: Ascend950DT
+        commonWord: Ascend950DT
+        resourceName: huawei.com/Ascend950DT
+        resourceMemoryName: huawei.com/Ascend950DT-memory
+        memoryAllocatable: 98304
+        memoryCapacity: 98304
+        aiCore: 32
       - chipName: 310P3
         commonWord: Ascend310P
         resourceName: huawei.com/Ascend310P

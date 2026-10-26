@@ -47,6 +47,7 @@ jobs:
         go get huawei.com/npu-exporter
         go get huawei.com/npu-exporter/utils/logger@v0.0.0-00010101000000-000000000000
         go mod tidy
+        make patch-submodules
     - name: golangci-lint
       uses: golangci/golangci-lint-action@v7
       env:
@@ -188,7 +189,7 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') }}
         build-args: |
-          BASE_IMAGE=ubuntu:20.04
+          BASE_IMAGE=ubuntu:22.04
           GO_VERSION=${{ env.GO_VERSION }}
           VERSION=${{ steps.branch-names.outputs.current_branch || steps.branch-names.outputs.tag }}-${{ github.sha }}
         tags: ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.VERSION }}

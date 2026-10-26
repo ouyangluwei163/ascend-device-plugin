@@ -1,0 +1,22 @@
+diff --git a/component/ascend-common/devmanager/dcmi/dcmi.go b/component/ascend-common/devmanager/dcmi/dcmi.go
+index ea90571d5..476d7668f 100644
+--- a/component/ascend-common/devmanager/dcmi/dcmi.go
++++ b/component/ascend-common/devmanager/dcmi/dcmi.go
+@@ -339,13 +339,13 @@ unsigned int *state);
+ unsigned int *state){
+ 		CALL_FUNC(dcmi_get_hccsping_mesh_state,card_id,device_id,port_id,task_id,state)
+ }
+-    static int (*dcmi_get_multi_die_policy_func)(unsigned int *policy);
+-    int dcmi_get_multi_die_policy(unsigned int *policy){
++    static int (*dcmi_get_multi_die_policy_func)(enum dcmi_multi_die_policy *policy);
++    int dcmi_get_multi_die_policy(enum dcmi_multi_die_policy *policy){
+     CALL_FUNC(dcmi_get_multi_die_policy,policy)
+     }
+ 
+-	static int (*dcmi_set_multi_die_policy_func)(unsigned int policy);
+-    int dcmi_set_multi_die_policy(unsigned int policy){
++	static int (*dcmi_set_multi_die_policy_func)(enum dcmi_multi_die_policy policy);
++    int dcmi_set_multi_die_policy(enum dcmi_multi_die_policy policy){
+     CALL_FUNC(dcmi_set_multi_die_policy,policy)
+     }
+ 

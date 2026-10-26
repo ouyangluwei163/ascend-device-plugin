@@ -41,6 +41,27 @@ helm install ascend-device-plugin ./charts/ascend-device-plugin \
 
 With this mode, the chart mounts the existing device config and still manages `hami-device-node-config` by default.
 
+## A5 (Ascend950DT)
+
+The default device configuration supports Ascend950DT whole cards: 98304 MiB
+(96 GiB) and 32 AI cores per NPU. Install the matching HAMi scheduler update so
+its device configuration and extender resources also include
+`huawei.com/Ascend950DT` and `huawei.com/Ascend950DT-memory`.
+
+Request whole cards with `huawei.com/Ascend950DT: 1` (or any available integer
+card count). Omit the memory resource or set it to `98304` per card. A5 has no
+slice templates or core resource; partial-memory and soft-slice requests are
+rejected. A5 advertises one device per physical NPU and uses whole-card mode
+even when global or node settings enable hami-core/ENPU or additional slots.
+
+The arm64 image bundles the UMDK libraries needed by the A5 driver. Rebuild
+using the updated Dockerfile, Makefile and CI base image (`ubuntu:22.04`);
+changing only the device configuration in an older image is insufficient.
+`UMDK_MIRROR`, `UMDK_URMA_VERSION` and `UMDK_URMA_PKG` can override the bundled
+archive at build time. The build checks its shared-library dependencies and
+GLIBC/GLIBCXX versions. This configuration covers Ascend950DT; other A5 variants
+need their own verified capacities and chip names.
+
 ## VNPU mode
 
 `hamiVnpuMode` selects `template`, `hami-core` (alias `hamiCore`), or `enpu`.

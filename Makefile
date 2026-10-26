@@ -9,16 +9,27 @@ ENPU_BUILDER_IMAGE ?= swr.cn-north-4.myhuaweicloud.com/ubscore/ubs-virt:oe2403-v
 
 all: ascend-device-plugin
 
+MIND_CLUSTER_PATCHES := $(sort $(wildcard patches/mind-cluster/*.patch))
+
+patch-submodules:
+	@for p in $(MIND_CLUSTER_PATCHES); do \
+		if git -C mind-cluster apply --reverse --check ../$$p 2>/dev/null; then \
+			echo "patch already applied: $$p"; \
+		else \
+			git -C mind-cluster apply ../$$p && echo "patch applied: $$p" || exit 1; \
+		fi; \
+	done
+
 tidy:
 	$(GO) mod tidy
 
-test:
+test: patch-submodules
 	$(GO) test -v ./internal/...
 
 docker:
 	docker build $(DOCKER_BUILD_ARGS) \
 	--build-arg VERSION="$(VERSION)" \
-	--build-arg BASE_IMAGE=ubuntu:20.04 \
+	--build-arg BASE_IMAGE=ubuntu:22.04 \
 	--build-arg GOPROXY=https://goproxy.cn,direct \
 	-t ${IMG_NAME}:${VERSION} .
 
@@ -33,11 +44,11 @@ docker-enpu: enpu-runtime
 		{ echo 'Prepare the existing hami-vnpu-core assets in lib/hami-vnpu-core before building the device-plugin image.' >&2; exit 1; }
 	$(MAKE) docker
 
-lint:
+lint: patch-submodules
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.0
 	golangci-lint run
 
-ascend-device-plugin:
+ascend-device-plugin: patch-submodules
 	$(GO) build $(BUILDARGS) -o ./ascend-device-plugin ./cmd/main.go
 
 .PHONY: update-chart-docs
@@ -84,4 +95,4 @@ verify-helm-release-path:
 clean:
 	rm -rf ./ascend-device-plugin
 
-.PHONY: all ascend-device-plugin tidy test lint clean enpu-runtime docker-enpu update-chart-docs verify-helm-chart verify-helm-release-path
+.PHONY: all patch-submodules ascend-device-plugin tidy test lint clean enpu-runtime docker-enpu update-chart-docs verify-helm-chart verify-helm-release-path
