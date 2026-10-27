@@ -63,6 +63,7 @@ type VNPUsConfig struct {
 }
 
 const (
+	Ascend950DT      = "Ascend950DT"
 	VNPUModeTemplate = "template"
 	VNPUModeHamiCore = "hami-core"
 	VNPUModeENPU     = "enpu"

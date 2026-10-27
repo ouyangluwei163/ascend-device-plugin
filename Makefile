@@ -18,7 +18,7 @@ test:
 docker:
 	docker build $(DOCKER_BUILD_ARGS) \
 	--build-arg VERSION="$(VERSION)" \
-	--build-arg BASE_IMAGE=ubuntu:20.04 \
+	--build-arg BASE_IMAGE=ubuntu:22.04 \
 	--build-arg GOPROXY=https://goproxy.cn,direct \
 	-t ${IMG_NAME}:${VERSION} .
 
