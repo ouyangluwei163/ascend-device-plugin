@@ -47,7 +47,6 @@ jobs:
         go get huawei.com/npu-exporter
         go get huawei.com/npu-exporter/utils/logger@v0.0.0-00010101000000-000000000000
         go mod tidy
-        make patch-submodules
     - name: golangci-lint
       uses: golangci/golangci-lint-action@v7
       env:
