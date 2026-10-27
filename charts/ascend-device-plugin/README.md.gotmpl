@@ -58,8 +58,7 @@ The arm64 image bundles the UMDK libraries needed by the A5 driver. Rebuild
 using the updated Dockerfile, Makefile and CI base image (`ubuntu:22.04`);
 changing only the device configuration in an older image is insufficient.
 `UMDK_MIRROR`, `UMDK_URMA_VERSION` and `UMDK_URMA_PKG` can override the bundled
-archive at build time. The build checks its shared-library dependencies and
-GLIBC/GLIBCXX versions. This configuration covers Ascend950DT; other A5 variants
+archive at build time. This configuration covers Ascend950DT; other A5 variants
 need their own verified capacities and chip names.
 
 ## VNPU mode

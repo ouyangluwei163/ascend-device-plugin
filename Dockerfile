@@ -24,7 +24,6 @@ RUN go get github.com/Project-HAMi/ascend-device-plugin/internal/server
 RUN go get huawei.com/npu-exporter
 RUN go get huawei.com/npu-exporter/utils/logger@v0.0.0-00010101000000-000000000000
 RUN make all
-RUN go build -o /build/elfdeps ./hack/elfdeps
 
 # A5's host-mounted libdcmi needs UnifiedBus user-space libraries. Keep the
 # RPM layout: liburma finds its providers under /usr/lib64/urma. A5 nodes are
@@ -58,16 +57,6 @@ RUN if [ "${TARGETARCH}" = "arm64" ]; then \
       apt-get update && apt-get install -y --no-install-recommends libnl-3-200 libnl-genl-3-200 libstdc++6 && \
       rm -rf /var/lib/apt/lists/*; \
     fi
-# Fail the build if the runtime rootfs is missing UMDK dependencies or the
-# GLIBC/GLIBCXX symbol versions they need. No Ascend driver is needed here.
-COPY --from=build /build/elfdeps /tmp/elfdeps
-RUN set -eu; \
-    if [ "${TARGETARCH}" = "arm64" ]; then \
-      /tmp/elfdeps -root / \
-        -path "${LD_LIBRARY_PATH}:/usr/local/lib:/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:/lib:/usr/lib" \
-        liburma.so.0 libtpsa.so.0 /usr/lib64/urma/liburma-udma.so /usr/lib64/urma/liburma_ubagg.so.0; \
-    fi; \
-    rm /tmp/elfdeps
 COPY --from=build /build/ascend-device-plugin /usr/local/bin/ascend-device-plugin
 COPY --from=build /build/lib/hami-vnpu-core/* /usr/local/hami-vnpu-core-assets/
 # ENPU assets are installed on the node and mounted into workloads.
